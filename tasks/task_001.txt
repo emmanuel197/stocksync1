@@ -1,0 +1,62 @@
+# Task ID: 1
+# Title: Database Schema Design and Model Creation
+# Status: in-progress
+# Dependencies: None
+# Priority: high
+# Description: Design and implement the database schema for StockSync, creating new models to replace the existing kuandorwear tables.
+# Details:
+# Completed: Created Django models for User, Organization, Product, Inventory, Order, OrderItem, Supplier, Buyer, Driver, Notification, and Communication with appropriate relationships, indexes, and constraints. Implemented initial migrations and basic multi-tenant isolation mechanisms.
+# Remaining: Implement data migration scripts, conduct thorough testing for normalization, query optimization, tenant isolation, and migration rollback strategy.
+
+# Test Strategy:
+# Pending: Write unit tests for model validation, relationships, and constraints. Test migrations in a staging environment. Verify query performance with sample data. Ensure proper tenant isolation in multi-tenant scenarios.
+
+# Subtasks:
+## 1. Design and implement User and Organization models [completed]
+### Dependencies: None
+### Description: Create the foundational User model with role-based fields and the Organization model for multi-tenant support
+### Details:
+# Completed
+
+## 2. Design and implement Product and Inventory models [completed]
+### Dependencies: 1.1
+### Description: Create Product and Inventory models with appropriate relationships and constraints
+### Details:
+# Completed
+
+## 3. Design and implement Order and OrderItem models [completed]
+### Dependencies: 1.2
+### Description: Create Order and OrderItem models with appropriate relationships to track transactions
+### Details:
+# Completed
+
+## 4. Design and implement Supplier, Buyer, and Driver models [completed]
+### Dependencies: 1.1
+### Description: Create models for external entities that interact with the inventory system
+### Details:
+# Completed
+
+## 5. Design and implement Notification and Communication models [completed]
+### Dependencies: 1.1
+### Description: Create models to handle system notifications and communication records
+### Details:
+# Completed
+
+## 6. Implement database normalization and relationship optimization [in-progress]
+### Dependencies: 1.1, 1.2, 1.3, 1.4, 1.5
+### Description: Review and optimize the database schema for normalization, performance, and data integrity
+### Details:
+# Implemented initial normalization and relationships. Further review and optimization testing needed.
+
+## 7. Implement multi-tenant isolation at database level [in-progress]
+### Dependencies: 1.6
+### Description: Ensure proper data isolation between different organizations in the multi-tenant system
+### Details:
+# Implemented middleware and custom managers for basic isolation. Further testing and refinement needed.
+
+## 8. Create and apply database migrations [in-progress]
+### Dependencies: 1.7
+### Description: Generate and apply migrations for all models, ensuring smooth transition from existing schema
+### Details:
+# Initial migrations generated and applied. Data migration scripts, staging testing, and rollback strategy pending.
+
