@@ -212,7 +212,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # CORS Settings
 CORS_ALLOWED_ORIGINS = [
     "https://stocksync.vercel.app",
-    "https://stocksync-frontend.vercel.app/",
+    "https://stocksync-frontend.vercel.app",
     "http://localhost:8080",
     "http://127.0.0.1:8000",
 ]
