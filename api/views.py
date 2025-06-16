@@ -1,13 +1,16 @@
 from django.shortcuts import get_object_or_404
 from .serializers import (
-    ProductSerializer, OrganizationSerializer, BuyerSerializer, SupplierSerializer, DriverSerializer, 
+    ProductSerializer, OrganizationSerializer, BuyerSerializer, SupplierSerializer, DriverSerializer,
     OrganizationOnboardingSerializer, OrganizationRelationshipSerializer, PotentialSupplierSerializer,
     InventorySerializer, InventoryMovementSerializer, ProductCreateSerializer, InventoryCreateSerializer,
     BrandSerializer, CategorySerializer, LocationSerializer, BuyerSupplierInventorySerializer,
-    BuyerSupplierProductSerializer, OrderSerializer # Ensure BuyerSupplierProductSerializer and OrderSerializer are imported
+    BuyerSupplierProductSerializer, OrderSerializer, # OrderSummarySerializer - can be removed or repurposed
+    # New Analytics Serializers
+    SalesOverviewSerializer, SalesTrendDataPointSerializer, TopSellingProductSerializer,
+    InventorySummarySerializer, AnalyticsDashboardSerializer
 )
 from .models import (
-    Product, Order, OrderItem, ShippingAddress, ProductImage, ProductSize, Buyer, Brand, Supplier, Driver, 
+    Product, Order, OrderItem, ShippingAddress, ProductImage, ProductSize, Buyer, Brand, Supplier, Driver,
     Category, Location, Inventory, InventoryMovement
 )
 from accounts.models import Organization, OrganizationRelationship, User
@@ -16,7 +19,6 @@ from rest_framework.response import Response
 from rest_framework import generics, status, serializers
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.authentication import JWTAuthentication
-import json
 from django.db.models import Q, Prefetch, Sum
 from .filters import ProductFilter
 from django_filters.rest_framework import DjangoFilterBackend
@@ -31,6 +33,12 @@ from accounts.permissions import IsBuyer, IsAdminOrManager, IsStaff
 from djoser.conf import settings as djoser_settings
 from django.db import transaction
 from decimal import Decimal
+# Import aggregation functions and date helper
+from .aggregation import (
+    get_sales_overview, get_sales_trend, get_top_selling_products,
+    get_inventory_summary, get_date_range_from_period
+)
+
 
 # Create your views here.
 class ProductAPIView(generics.ListAPIView):
@@ -1324,3 +1332,127 @@ class LocationDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         # Only allow access to locations belonging to the user's organization
         return Location.objects.filter(organization=organization)
+
+# --- Analytics Views ---
+
+class AnalyticsDashboardView(APIView):
+    """
+    Provides a consolidated view of key analytics metrics for the dashboard.
+    Accepts a 'period' query parameter (e.g., 'today', 'this_week', 'this_month', 'last_7_days', 'last_30_days').
+    Defaults to 'this_month' if no period is specified.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        organization = user.organization
+        if not organization:
+            return Response({"error": "User is not associated with an organization."}, status=status.HTTP_400_BAD_REQUEST)
+
+        period_str = request.query_params.get('period', 'this_month')
+        start_date_param = request.query_params.get('start_date')
+        end_date_param = request.query_params.get('end_date')
+
+        if start_date_param and end_date_param:
+            try:
+                start_date = timezone.datetime.strptime(start_date_param, '%Y-%m-%d').replace(tzinfo=timezone.get_current_timezone())
+                end_date = timezone.datetime.strptime(end_date_param, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.get_current_timezone())
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            start_date, end_date = get_date_range_from_period(period_str)
+            if start_date is None: # Handle unsupported period string gracefully
+                 start_date, end_date = get_date_range_from_period('this_month')
+
+
+        sales_overview_data = get_sales_overview(organization, start_date, end_date)
+        inventory_summary_data = get_inventory_summary(organization)
+        # top_products_revenue = get_top_selling_products(organization, start_date, end_date, limit=5, by='revenue')
+        # top_products_units = get_top_selling_products(organization, start_date, end_date, limit=5, by='units')
+
+
+        dashboard_data = {
+            'sales_overview': sales_overview_data,
+            'inventory_summary': inventory_summary_data,
+            # 'top_products_by_revenue': top_products_revenue,
+            # 'top_products_by_units': top_products_units,
+        }
+
+        serializer = AnalyticsDashboardSerializer(dashboard_data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class SalesTrendAnalyticsView(APIView):
+    """
+    Provides sales trend data.
+    Accepts 'start_date', 'end_date', and 'interval' (day, week, month) query parameters.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        organization = user.organization
+        if not organization:
+            return Response({"error": "User is not associated with an organization."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            start_date_str = request.query_params.get('start_date')
+            end_date_str = request.query_params.get('end_date')
+            interval = request.query_params.get('interval', 'day')
+
+            if not start_date_str or not end_date_str:
+                # Default to last 30 days if no specific range is given
+                default_start, default_end = get_date_range_from_period('last_30_days')
+                start_date = default_start
+                end_date = default_end
+            else:
+                start_date = timezone.datetime.strptime(start_date_str, '%Y-%m-%d').replace(tzinfo=timezone.get_current_timezone())
+                end_date = timezone.datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.get_current_timezone())
+
+
+            if interval not in ['day', 'week', 'month']:
+                return Response({"error": "Invalid interval. Choose 'day', 'week', or 'month'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        trend_data = get_sales_trend(organization, start_date, end_date, interval)
+        serializer = SalesTrendDataPointSerializer(trend_data, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class TopSellingProductsAnalyticsView(APIView):
+    """
+    Provides a list of top selling products.
+    Accepts 'period', 'start_date', 'end_date', 'limit', and 'by' (revenue, units) query parameters.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        organization = user.organization
+        if not organization:
+            return Response({"error": "User is not associated with an organization."}, status=status.HTTP_400_BAD_REQUEST)
+
+        period_str = request.query_params.get('period', 'this_month')
+        start_date_param = request.query_params.get('start_date')
+        end_date_param = request.query_params.get('end_date')
+        
+        limit = int(request.query_params.get('limit', 5))
+        by_param = request.query_params.get('by', 'revenue') # 'revenue' or 'units'
+
+        if start_date_param and end_date_param:
+            try:
+                start_date = timezone.datetime.strptime(start_date_param, '%Y-%m-%d').replace(tzinfo=timezone.get_current_timezone())
+                end_date = timezone.datetime.strptime(end_date_param, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.get_current_timezone())
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            start_date, end_date = get_date_range_from_period(period_str)
+            if start_date is None: # Handle unsupported period string gracefully
+                 start_date, end_date = get_date_range_from_period('this_month')
+
+        if by_param not in ['revenue', 'units']:
+            return Response({"error": "Invalid 'by' parameter. Choose 'revenue' or 'units'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        top_products_data = get_top_selling_products(organization, start_date, end_date, limit, by_param)
+        serializer = TopSellingProductSerializer(top_products_data, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)

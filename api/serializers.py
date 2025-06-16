@@ -583,3 +583,36 @@ class OrderSerializer(serializers.ModelSerializer):
             'order_number', 'organization', 'status', 'total_amount',
             'order_date', 'created_by', 'updated_at'
         ]
+
+class SalesOverviewSerializer(serializers.Serializer):
+    start_date = serializers.CharField()
+    end_date = serializers.CharField()
+    total_revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_orders = serializers.IntegerField()
+    total_items_sold = serializers.IntegerField()
+    average_sale_value = serializers.DecimalField(max_digits=12, decimal_places=2)
+    average_items_per_sale = serializers.FloatField()
+    total_cogs = serializers.DecimalField(max_digits=12, decimal_places=2)
+    net_profit = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+class SalesTrendDataPointSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+class TopSellingProductSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    product_name = serializers.CharField()
+    total_revenue = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    units_sold = serializers.IntegerField(required=False)
+
+class InventorySummarySerializer(serializers.Serializer):
+    total_stock_units = serializers.IntegerField()
+    total_stock_value = serializers.DecimalField(max_digits=12, decimal_places=2)
+    low_stock_items_count = serializers.IntegerField()
+    approx_days_on_hand = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+class AnalyticsDashboardSerializer(serializers.Serializer):
+    sales_overview = SalesOverviewSerializer()
+    inventory_summary = InventorySummarySerializer()
+    # top_products_by_revenue = TopSellingProductSerializer(many=True) # Example: if you want to nest it
+    # top_products_by_units = TopSellingProductSerializer(many=True) # Example

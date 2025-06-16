@@ -1,5 +1,11 @@
 from django.urls import path
-from .views import *
+from .views import *  # Ensure new analytics views are imported if using *
+# Or explicitly import:
+# from .views import (
+#   AnalyticsDashboardView, SalesTrendAnalyticsView, TopSellingProductsAnalyticsView,
+#   ... other views ...
+# )
+
 app_name = 'api'
 urlpatterns = [
     path('products/', ProductAPIView.as_view()),
@@ -28,4 +34,10 @@ urlpatterns = [
     path('categories/<int:pk>/', CategoryDetailView.as_view(), name='category-detail-update-delete'),
     path('locations/', LocationListView.as_view(), name='location-list-create'),
     path('locations/<int:pk>/', LocationDetailView.as_view(), name='location-detail-update-delete'),
+
+    # Analytics URLs
+    path('analytics/dashboard/', AnalyticsDashboardView.as_view(), name='analytics-dashboard'),
+    path('analytics/sales-trend/', SalesTrendAnalyticsView.as_view(), name='analytics-sales-trend'),
+    path('analytics/top-products/', TopSellingProductsAnalyticsView.as_view(), name='analytics-top-products'),
+    # Add more analytics URLs here as needed
 ]
