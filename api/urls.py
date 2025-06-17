@@ -3,6 +3,7 @@ from .views import *  # Ensure new analytics views are imported if using *
 # Or explicitly import:
 # from .views import (
 #   AnalyticsDashboardView, SalesTrendAnalyticsView, TopSellingProductsAnalyticsView,
+#   ManualInventoryAdjustmentView, # Import the new view
 #   ... other views ...
 # )
 
@@ -39,5 +40,9 @@ urlpatterns = [
     path('analytics/dashboard/', AnalyticsDashboardView.as_view(), name='analytics-dashboard'),
     path('analytics/sales-trend/', SalesTrendAnalyticsView.as_view(), name='analytics-sales-trend'),
     path('analytics/top-products/', TopSellingProductsAnalyticsView.as_view(), name='analytics-top-products'),
-    # Add more analytics URLs here as needed
+
+    # Manual Inventory Adjustment URL
+    path('inventory/adjust/', ManualInventoryAdjustmentView.as_view(), name='manual-inventory-adjustment'),
+
+    # Add more URLs here as needed
 ]

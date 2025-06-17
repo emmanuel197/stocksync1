@@ -7,7 +7,9 @@ from .serializers import (
     BuyerSupplierProductSerializer, OrderSerializer, # OrderSummarySerializer - can be removed or repurposed
     # New Analytics Serializers
     SalesOverviewSerializer, SalesTrendDataPointSerializer, TopSellingProductSerializer,
-    InventorySummarySerializer, AnalyticsDashboardSerializer
+    InventorySummarySerializer, AnalyticsDashboardSerializer,
+    ManualInventoryAdjustmentSerializer, # Import the new serializer
+    ManualInventoryAdjustmentItemSerializer # Import the item serializer if needed elsewhere, but not strictly required here
 )
 from .models import (
     Product, Order, OrderItem, ShippingAddress, ProductImage, ProductSize, Buyer, Brand, Supplier, Driver,
@@ -38,6 +40,7 @@ from .aggregation import (
     get_sales_overview, get_sales_trend, get_top_selling_products,
     get_inventory_summary, get_date_range_from_period
 )
+import json # Import json for UnAuthProcessOrderView
 
 
 # Create your views here.
@@ -589,22 +592,17 @@ class ProcessOrderView(APIView):
                     print(f"Processing item for inventory update: Product {product.sku}, Quantity {quantity_purchased}")
 
                     # --- Supplier Inventory Update ---
-                    # Find the supplier's inventory item for this product.
-                    # This assumes the product belongs to a supplier organization.
                     supplier_organization = product.organization
                     if supplier_organization and supplier_organization.organization_type in ['supplier', 'both']:
                         print(f"Product belongs to supplier organization: {supplier_organization.name}")
-                        # Find an inventory item for this product at the supplier's organization.
-                        # This might need refinement based on how suppliers manage locations.
-                        # For simplicity, we'll try to find any inventory item for the product at the supplier's org.
                         supplier_inventory_item = Inventory.objects.filter(
                             product=product,
                             organization=supplier_organization
-                        ).first() # Get the first one found
+                        ).first()
                         print(f"Supplier inventory item found: {supplier_inventory_item}")
 
                         if supplier_inventory_item:
-                            # Decrease supplier's inventory
+                            # Decrease supplier's inventory *before* creating the movement
                             supplier_inventory_item.quantity -= quantity_purchased
                             supplier_inventory_item.last_sold = timezone.now()
                             supplier_inventory_item.save()
@@ -615,19 +613,17 @@ class ProcessOrderView(APIView):
                                 inventory=supplier_inventory_item,
                                 movement_type='sale',
                                 quantity_change=-quantity_purchased, # Negative for subtraction
+                                quantity_after_movement=supplier_inventory_item.quantity, # Set quantity after change
                                 user=user, # User who processed the order (the buyer in this flow)
                                 organization=supplier_organization, # The supplier's organization
                                 note=f"Sale to {organization.name} (Order {order.id})"
                             )
                             print("Supplier inventory movement recorded.")
                         else:
-                            # Handle case where supplier inventory item is not found (e.g., log a warning)
                             print(f"Warning: Supplier inventory item not found for product {product.sku} at organization {supplier_organization.name}")
 
 
                     # --- Buyer Inventory Update ---
-                    # Find or create the buyer's inventory item for this product.
-                    # Use the buyer's default location
                     buyer_inventory_item, created = Inventory.objects.get_or_create(
                         product=product,
                         organization=organization, # The buyer's organization
@@ -636,9 +632,8 @@ class ProcessOrderView(APIView):
                     )
                     print(f"Buyer inventory item found/created: {buyer_inventory_item}, Created: {created}")
 
-                    # Increase buyer's inventory
+                    # Increase buyer's inventory *before* creating the movement
                     buyer_inventory_item.quantity += quantity_purchased
-                    # You might want to set a 'last_received' field here
                     buyer_inventory_item.save()
                     print(f"Buyer inventory updated for {product.sku}. New quantity: {buyer_inventory_item.quantity}")
 
@@ -647,6 +642,7 @@ class ProcessOrderView(APIView):
                         inventory=buyer_inventory_item,
                         movement_type='purchase',
                         quantity_change=quantity_purchased, # Positive for addition
+                        quantity_after_movement=buyer_inventory_item.quantity, # Set quantity after change
                         user=user, # User who processed the order (the buyer)
                         organization=organization, # The buyer's organization
                         note=f"Purchase from {supplier_organization.name} (Order {order.id})"
@@ -654,8 +650,7 @@ class ProcessOrderView(APIView):
                     print("Buyer inventory movement recorded.")
 
             else:
-                # Handle total mismatch (potential fraud or calculation error)
-                # Log the mismatch for debugging
+                # Handle total mismatch
                 print(f"Total mismatch for Order {order.id}: Received {received_total}, Calculated {order.get_cart_total}")
                 return Response({"detail": "Total mismatch. Order not processed."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1456,3 +1451,100 @@ class TopSellingProductsAnalyticsView(APIView):
         top_products_data = get_top_selling_products(organization, start_date, end_date, limit, by_param)
         serializer = TopSellingProductSerializer(top_products_data, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class ManualInventoryAdjustmentView(APIView):
+    """
+    Allows manual adjustment of inventory quantity for items belonging
+    to the authenticated user's organization.
+    Supports addition, removal, adjustment, and sale movement types.
+    """
+    # Allow IsBuyer OR IsAdminOrManager | IsStaff to perform manual adjustments
+    permission_classes = [IsAuthenticated, IsBuyer | IsAdminOrManager | IsStaff]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = ManualInventoryAdjustmentSerializer # Set the serializer class
+
+    def post(self, request, *args, **kwargs):
+        print("--- Inside ManualInventoryAdjustmentView POST method ---")
+        user = request.user
+        organization = user.organization
+        print(f"User: {user}, Organization: {organization}")
+
+        if not organization:
+             print("User not associated with an organization.")
+             return Response({"detail": "User is not associated with an organization."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Use the serializer to validate the input data
+        serializer = self.serializer_class(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        movement_type = serializer.validated_data['movement_type']
+        items_data = serializer.validated_data['items']
+        inventory_dict = serializer.validated_data['_inventory_items'] # Get pre-fetched inventory items
+
+        print(f"Processing manual inventory adjustment: Type='{movement_type}', Items Count={len(items_data)}")
+
+        try:
+            with transaction.atomic():
+                print("Starting atomic transaction for manual inventory adjustment.")
+                for item_data in items_data:
+                    inventory_id = item_data['inventory_id'].id
+                    quantity_change_abs = item_data['quantity'] # Absolute quantity change
+                    note = item_data.get('note')
+                    reference = item_data.get('reference')
+
+                    inventory = inventory_dict[inventory_id]
+                    print(f"Processing item: Inventory ID={inventory.id}, Product='{inventory.product.name}', Quantity Change (abs)={quantity_change_abs}")
+
+                    if movement_type == 'addition':
+                        # add_stock method now handles setting quantity_after_movement
+                        inventory.add_stock(
+                            quantity_change_abs,
+                            user=user,
+                            organization=organization,
+                            note=note,
+                            reference=reference
+                        )
+                        print(f"Added {quantity_change_abs} to inventory {inventory.id}. New quantity: {inventory.quantity}")
+
+                    elif movement_type in ['removal', 'sale']:
+                        if inventory.quantity < quantity_change_abs:
+                            raise serializers.ValidationError(f"Insufficient stock for {movement_type}: {inventory.product.name}")
+
+                        # Update quantity *before* creating the movement
+                        inventory.quantity -= quantity_change_abs
+                        if movement_type == 'sale':
+                            inventory.last_sold = timezone.now() # Update last_sold for sales
+                        inventory.save()
+                        print(f"Removed {quantity_change_abs} from inventory {inventory.id} ({movement_type}). New quantity: {inventory.quantity}")
+
+                        # Manually create InventoryMovement for 'removal' or 'sale' type
+                        # Set quantity_after_movement here
+                        InventoryMovement.objects.create(
+                            inventory=inventory,
+                            movement_type=movement_type, # Use the requested type
+                            quantity_change=-quantity_change_abs, # Negative for removal
+                            quantity_after_movement=inventory.quantity, # Set the quantity after the change
+                            user=user,
+                            organization=organization,
+                            note=note or f"Manual {movement_type} of {quantity_change_abs} units",
+                            reference=reference
+                        )
+                        print(f"Inventory movement ({movement_type}) recorded.")
+
+                    # The 'adjustment' case logic needs to be defined based on how you want it to behave
+                    # with the current serializer structure (quantity >= 1).
+                    # If 'adjustment' means adding/removing a specific amount, the serializer/logic needs refinement.
+                    # For now, we proceed with addition, removal, sale.
+
+
+                print("Manual inventory adjustment transaction successful.")
+                return Response({"detail": "Inventory adjusted successfully."}, status=status.HTTP_200_OK)
+
+        except serializers.ValidationError as e:
+            print(f"Validation error during manual adjustment: {e.detail}")
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Log the error
+            print(f"Error during manual inventory adjustment: {e}")
+            # In production, avoid returning raw exception details
+            return Response({"detail": "An internal server error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

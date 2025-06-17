@@ -413,10 +413,7 @@ class InventorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Inventory
-        fields = [
-            'id', 'product', 'location', 'quantity', 'last_stocked', 'last_sold',
-            'created_at', 'updated_at', 'organization'
-        ]
+        fields = '__all__' # Or list fields explicitly
         read_only_fields = ['last_stocked', 'last_sold', 'created_at', 'updated_at', 'organization']
 
     def to_representation(self, instance):
@@ -483,43 +480,117 @@ class InventoryCreateSerializer(serializers.ModelSerializer):
 
         return data
 
+class SimpleInventorySerializer(serializers.ModelSerializer):
+    product = ProductSerializer() # Or a simplified Product serializer
+    location = LocationSerializer() # Or a simplified Location serializer
+    # Do NOT include the 'quantity' field here if you only want the quantity_after_movement
+
+    class Meta:
+        model = Inventory
+        fields = ['id', 'product', 'location'] # Include relevant fields
+
 class InventoryMovementSerializer(serializers.ModelSerializer):
-    inventory = serializers.SerializerMethodField()
-    moved_by = serializers.SlugRelatedField(slug_field='email', read_only=True)
+    # Use the simplified serializer for the nested inventory
+    # Or keep the full InventorySerializer if you want all current details
+    inventory = SimpleInventorySerializer() # Use the simplified serializer
+
+    # Add the new field
+    quantity_after_movement = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = InventoryMovement
         fields = [
-            'id', 'inventory', 'movement_type', 'quantity_change',
-            'timestamp', 'moved_by'
+            'id',
+            'inventory', # This will use the nested serializer
+            'movement_type',
+            'quantity_change',
+            'quantity_after_movement', # Include the new field
+            'note',
+            'reference',
+            'timestamp',
+            # 'user', # Optionally include user details
+            # 'organization', # Optionally include organization details
         ]
-        read_only_fields = [
-            'timestamp', 'moved_by'
-        ]
+        read_only_fields = ['timestamp', 'quantity_after_movement'] # quantity_after_movement is set by the model/view
 
-    def get_inventory(self, obj):
+class   ManualInventoryAdjustmentItemSerializer(serializers.Serializer):
+    """
+    Serializer for a single item within a manual inventory adjustment request.
+    """
+    inventory_id = serializers.PrimaryKeyRelatedField(
+        queryset=Inventory.objects.all(),
+        error_messages={'does_not_exist': 'Inventory item with ID {pk_value} does not exist.'}
+    )
+    quantity = serializers.IntegerField(min_value=1)
+    note = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    reference = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+
+
+class ManualInventoryAdjustmentSerializer(serializers.Serializer):
+    """
+    Serializer for the overall manual inventory adjustment request.
+    Handles a list of items and the movement type.
+    """
+    movement_type = serializers.ChoiceField(
+        choices=[
+            ('addition', 'Stock Added'),
+            ('removal', 'Stock Removed'),
+            ('adjustment', 'Stock Adjusted'),
+            ('sale', 'Sale to Customer'),
+        ],
+        error_messages={'invalid_choice': 'Invalid movement type. Choose from: addition, removal, adjustment, sale.'}
+    )
+    items = ManualInventoryAdjustmentItemSerializer(many=True)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one item is required for an adjustment.")
+        return value
+
+    def validate(self, data):
+        """
+        Custom validation to ensure inventory items belong to the user's organization
+        and check for sufficient stock for removal/sale types.
+        """
         request = self.context.get('request')
-        user_organization = request.user.organization if request and request.user and request.user.is_authenticated else None
+        user_organization = request.user.organization
 
-        # Re-fetch the Inventory object to ensure we have the latest quantity
-        try:
-            inventory_item = Inventory.objects.get(pk=obj.inventory.pk)
-        except Inventory.DoesNotExist:
-            return None # Or handle this case as appropriate
+        movement_type = data.get('movement_type')
+        items_data = data.get('items')
 
-        product_organization = inventory_item.product.organization
+        inventory_ids = [item_data['inventory_id'].id for item_data in items_data]
+        # Fetch all requested inventory items in one query
+        inventory_items = Inventory.objects.filter(id__in=inventory_ids, organization=user_organization)
 
-        # If the user is a buyer/both AND the product belongs to a different organization (a supplier)
-        # Use BuyerSupplierInventorySerializer which hides quantity and uses BuyerSupplierProductSerializer
-        if user_organization and user_organization.organization_type in ['buyer', 'both'] and product_organization != user_organization:
-            # Note: BuyerSupplierInventorySerializer excludes 'quantity' by design
-            return BuyerSupplierInventorySerializer(inventory_item, context=self.context).data
-        else:
-            # Otherwise (user is supplier/internal, or buyer viewing their own product,
-            # or buyer viewing a supplier product that is somehow in their own inventory),
-            # use the standard InventorySerializer.
-            # InventorySerializer's to_representation already handles hiding cost for supplier products in buyer's inventory.
-            return InventorySerializer(inventory_item, context=self.context).data
+        if len(inventory_items) != len(inventory_ids):
+            # Find which IDs were not found or don't belong to the organization
+            found_ids = [item.id for item in inventory_items]
+            missing_ids = list(set(inventory_ids) - set(found_ids))
+            raise serializers.ValidationError(
+                f"One or more inventory items not found or do not belong to your organization: IDs {missing_ids}"
+            )
+
+        # Create a dictionary for easy lookup by ID
+        inventory_dict = {item.id: item for item in inventory_items}
+
+        # Check stock levels for removal/sale types
+        if movement_type in ['removal', 'sale']:
+            errors = {}
+            for item_data in items_data:
+                inventory_id = item_data['inventory_id'].id
+                quantity_to_remove = item_data['quantity']
+                inventory = inventory_dict[inventory_id]
+
+                if inventory.quantity < quantity_to_remove:
+                    errors[str(inventory_id)] = f"Insufficient stock for product '{inventory.product.name}' at '{inventory.location.name}'. Available: {inventory.quantity}, Requested: {quantity_to_remove}"
+
+            if errors:
+                raise serializers.ValidationError({"items": errors})
+
+        # Attach the fetched inventory items to the validated data for easier access in the view
+        data['_inventory_items'] = inventory_dict
+
+        return data
 
 class BrandSerializer(serializers.ModelSerializer):
     class Meta:

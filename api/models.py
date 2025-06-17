@@ -345,32 +345,75 @@ class Inventory(models.Model):
         """Calculate total value of inventory"""
         return Decimal(self.quantity) * self.product.cost
 
-    def add_stock(self, amount, note=None):
-        """Add stock to inventory"""
-        self.quantity += amount
+    def add_stock(self, quantity, user=None, organization=None, note=None, reference=None):
+        """Adds stock to inventory and records movement."""
+        if quantity <= 0:
+            # Optionally log a warning or raise an error
+            return
+
+        # Ensure organization is provided, either directly or from the inventory instance
+        # Use the provided organization if available, otherwise fall back to the inventory's organization
+        movement_organization = organization if organization is not None else self.organization
+        if movement_organization is None:
+             # This indicates a potential data integrity issue if inventory has no organization
+             print(f"Warning: Inventory {self.id} has no organization. Cannot create movement.")
+             return # Or raise an error
+
+        # Update inventory quantity *before* creating the movement
+        self.quantity += quantity
         self.save()
+
+        # Create InventoryMovement, setting quantity_after_movement
         InventoryMovement.objects.create(
             inventory=self,
-            quantity_change=amount,
             movement_type='addition',
-            note=note or f"Added {amount} units"
+            quantity_change=quantity,
+            quantity_after_movement=self.quantity, # Set the quantity after the change
+            user=user,
+            organization=movement_organization, # Use the determined organization
+            note=note,
+            reference=reference
         )
-        return True
 
-    def remove_stock(self, amount, note=None):
-        """Remove stock from inventory"""
-        if self.quantity >= amount:
-            self.quantity -= amount
-            self.save()
-            InventoryMovement.objects.create(
-                inventory=self,
-                quantity_change=-amount,
-                movement_type='removal',
-                note=note or f"Removed {amount} units"
-            )
-            return True
-        return False
+    def remove_stock(self, quantity, user=None, organization=None, note=None, reference=None):
+        """Removes stock from inventory and records movement."""
+        if quantity <= 0:
+            # Optionally log a warning or raise an error
+            return
+        if self.quantity < quantity:
+            # Handle insufficient stock - maybe raise an exception
+            print(f"Warning: Attempted to remove {quantity} from inventory {self.id} with only {self.quantity} available.")
+            # Depending on requirements, you might raise an error here
+            # raise ValueError("Insufficient stock")
+            return # Or handle insufficient stock differently
 
+        # Ensure organization is provided, either directly or from the inventory instance
+        # Use the provided organization if available, otherwise fall back to the inventory's organization
+        movement_organization = organization if organization is not None else self.organization
+        if movement_organization is None:
+             # This indicates a potential data integrity issue if inventory has no organization
+             print(f"Warning: Inventory {self.id} has no organization. Cannot create movement.")
+             return # Or raise an error
+
+        # Update inventory quantity *before* creating the movement
+        self.quantity -= quantity
+        # You might want to update last_sold here if removal implies a sale/loss
+        # self.last_sold = timezone.now()
+        self.save()
+
+        # Create InventoryMovement, setting quantity_after_movement
+        InventoryMovement.objects.create(
+            inventory=self,
+            movement_type='removal',
+            quantity_change=-quantity, # Negative
+            quantity_after_movement=self.quantity, # Set the quantity after the change
+            user=user,
+            organization=movement_organization, # Use the determined organization
+            note=note,
+            reference=reference
+        )
+
+    # Add other methods like adjust_stock if needed, ensuring they also handle organization
 
 class InventoryMovement(models.Model):
     MOVEMENT_TYPES = [
@@ -378,10 +421,13 @@ class InventoryMovement(models.Model):
         ('removal', 'Stock Removed'),
         ('adjustment', 'Stock Adjusted'),
         ('transfer', 'Stock Transferred'),
+        ('sale', 'Sale to Customer'),
+        ('purchase', 'Purchase from Supplier'), # Ensure 'purchase' is also here if used
     ]
 
     inventory = models.ForeignKey(Inventory, on_delete=models.CASCADE, related_name='movements')
     quantity_change = models.IntegerField(help_text="Positive for additions, negative for removals")
+    quantity_after_movement = models.IntegerField(help_text="Inventory quantity after this movement occurred", null=True, blank=True) # Add this field
     movement_type = models.CharField(max_length=20, choices=MOVEMENT_TYPES)
     note = models.TextField(blank=True, null=True)
     reference = models.CharField(max_length=100, blank=True, null=True, help_text="Reference to order, transfer, etc.")
@@ -396,9 +442,10 @@ class InventoryMovement(models.Model):
             models.Index(fields=['timestamp']),
             models.Index(fields=['organization']),
         ]
+        ordering = ['-timestamp'] # Order by most recent movements first
 
     def __str__(self):
-        return f"{self.movement_type}: {self.quantity_change} units of {self.inventory.product.name}"
+        return f"{self.get_movement_type_display()}: {self.quantity_change} units of {self.inventory.product.name} (Qty after: {self.quantity_after_movement})"
 
 
 def generate_unique_transaction_id():
