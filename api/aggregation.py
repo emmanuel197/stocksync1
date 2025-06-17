@@ -3,6 +3,7 @@ from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
 from django.utils import timezone
 from .models import Order, OrderItem, Product, Inventory, InventoryMovement
 from decimal import Decimal
+from django.db.models import OuterRef, Subquery # Import Subquery and OuterRef
 
 def get_date_range_from_period(period_str):
     """
@@ -11,11 +12,12 @@ def get_date_range_from_period(period_str):
     Returns (start_date, end_date).
     """
     now = timezone.now()
-    start_date, end_date = None, now
+    start_date, end_date = None, now # Initialize end_date to now
 
     if period_str == 'today':
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif period_str == 'this_week':
+        # Monday as the start of the week
         start_date = (now - timezone.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     elif period_str == 'this_month':
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -25,39 +27,51 @@ def get_date_range_from_period(period_str):
         start_date = (now - timezone.timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
     # Add more custom periods as needed
 
+    # Ensure start_date is timezone-aware if now is
+    if timezone.is_aware(now) and start_date and timezone.is_naive(start_date):
+         start_date = timezone.make_aware(start_date.replace(tzinfo=None), timezone.get_current_timezone())
+    if timezone.is_aware(now) and end_date and timezone.is_naive(end_date):
+         end_date = timezone.make_aware(end_date.replace(tzinfo=None), timezone.get_current_timezone())
+
+
     return start_date, end_date
 
 
 def get_sales_overview(organization, start_date=None, end_date=None):
     """
-    Calculates a comprehensive sales overview for a given organization and date range.
+    Calculates a comprehensive sales overview for a given organization (as a supplier)
+    within a date range.
     """
     if start_date is None and end_date is None: # Default to this month if no dates provided
         end_date = timezone.now()
         start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if timezone.is_aware(end_date):
+             start_date = timezone.make_aware(start_date.replace(tzinfo=None), timezone.get_current_timezone())
 
-    orders_qs = Order.objects.filter(
-        organization=organization,
-        status__in=['delivered', 'completed'], # Consider which statuses count as a sale
-        order_date__gte=start_date,
-        order_date__lte=end_date
-    )
 
-    summary = orders_qs.aggregate(
-        total_revenue=Sum('total_amount'),
-        total_orders=Count('id')
+    # Filter OrderItems where the product belongs to the given organization
+    # and the associated order is completed within the date range.
+    order_items_qs = OrderItem.objects.filter(
+        product__organization=organization, # Filter by the product's organization
+        order__status__in=['delivered', 'completed'], # Consider which statuses count as a sale
+        order__order_date__gte=start_date,
+        order__order_date__lte=end_date
+    ).select_related('product', 'order') # Select related for efficiency
+
+    # Aggregate data from the filtered OrderItems
+    summary = order_items_qs.aggregate(
+        total_revenue=Sum(F('quantity') * F('unit_price'), output_field=DecimalField()),
+        total_items_sold=Sum('quantity')
     )
 
     total_revenue = summary['total_revenue'] or Decimal('0.00')
-    total_orders = summary['total_orders'] or 0
+    total_items_sold = summary['total_items_sold'] or 0
 
-    order_items_qs = OrderItem.objects.filter(
-        order__in=orders_qs
-    ).select_related('product')
-
-    total_items_sold = order_items_qs.aggregate(Sum('quantity'))['quantity__sum'] or 0
+    # To get the count of unique orders, we can get the distinct order IDs from the filtered items
+    total_orders = order_items_qs.values('order').distinct().count()
 
     total_cogs = Decimal('0.00')
+    # Calculate COGS by iterating through the filtered order items
     for item in order_items_qs:
         if item.product and item.product.cost is not None:
             total_cogs += item.quantity * item.product.cost
@@ -80,7 +94,8 @@ def get_sales_overview(organization, start_date=None, end_date=None):
 
 def get_sales_trend(organization, start_date, end_date, interval='day'):
     """
-    Calculates sales trend data for a given organization, date range, and interval.
+    Calculates sales trend data for a given organization (as a supplier),
+    date range, and interval.
     Interval can be 'day', 'week', 'month'.
     """
     trunc_func = TruncDay
@@ -89,25 +104,36 @@ def get_sales_trend(organization, start_date, end_date, interval='day'):
     elif interval == 'month':
         trunc_func = TruncMonth
 
-    sales_data = Order.objects.filter(
-        organization=organization,
-        status__in=['delivered', 'completed'],
-        order_date__gte=start_date,
-        order_date__lte=end_date
+    # Filter OrderItems where the product belongs to the given organization
+    # and the associated order is completed within the date range.
+    sales_data = OrderItem.objects.filter(
+        product__organization=organization, # Filter by the product's organization
+        order__status__in=['delivered', 'completed'],
+        order__order_date__gte=start_date,
+        order__order_date__lte=end_date
     ).annotate(
-        period=trunc_func('order_date')
+        # Truncate the order date of the associated order
+        period=trunc_func('order__order_date')
     ).values('period').annotate(
-        total_sales=Sum('total_amount')
+        # Sum the revenue for items within each period
+        total_sales=Sum(F('quantity') * F('unit_price'), output_field=DecimalField())
     ).order_by('period')
+
+    # Ensure all periods in the range are included, even if sales are 0
+    # This requires generating all dates/weeks/months in the range and merging.
+    # For simplicity, we'll return the data as is. Frontend can handle filling gaps.
 
     return [{'date': item['period'].isoformat(), 'sales': item['total_sales'] or 0} for item in sales_data]
 
 def get_top_selling_products(organization, start_date, end_date, limit=5, by='revenue'):
     """
-    Gets top selling products by revenue or units sold.
+    Gets top selling products for a given organization (as a supplier)
+    by revenue or units sold within a date range.
     """
+    # Filter OrderItems where the product belongs to the given organization
+    # and the associated order is completed within the date range.
     order_items_qs = OrderItem.objects.filter(
-        order__organization=organization,
+        product__organization=organization, # Filter by the product's organization
         order__status__in=['delivered', 'completed'],
         order__order_date__gte=start_date,
         order__order_date__lte=end_date
@@ -117,7 +143,7 @@ def get_top_selling_products(organization, start_date, end_date, limit=5, by='re
         top_products = order_items_qs.values(
             'product__id', 'product__name'
         ).annotate(
-            total_value=Sum(F('quantity') * F('unit_price')),
+            total_value=Sum(F('quantity') * F('unit_price'), output_field=DecimalField()),
             units_sold=Sum('quantity')
         ).order_by('-total_value')[:limit]
         return [{'product_id': p['product__id'], 'product_name': p['product__name'], 'total_revenue': p['total_value'], 'units_sold': p['units_sold']} for p in top_products]
@@ -126,30 +152,32 @@ def get_top_selling_products(organization, start_date, end_date, limit=5, by='re
             'product__id', 'product__name'
         ).annotate(
             units_sold=Sum('quantity'),
-            total_value=Sum(F('quantity') * F('unit_price'))
+            total_value=Sum(F('quantity') * F('unit_price'), output_field=DecimalField())
         ).order_by('-units_sold')[:limit]
         return [{'product_id': p['product__id'], 'product_name': p['product__name'], 'units_sold': p['units_sold'], 'total_revenue': p['total_value']} for p in top_products]
     return []
 
 def get_inventory_summary(organization):
     """
-    Provides a summary of the current inventory.
+    Provides a summary of the current inventory for a given organization.
+    This function already works from the perspective of the organization whose inventory it is.
     """
     inventory_items = Inventory.objects.filter(organization=organization).select_related('product')
 
     total_stock_units = inventory_items.aggregate(total=Sum('quantity'))['total'] or 0
-    
+
     total_stock_value = Decimal('0.00')
     for item in inventory_items:
         if item.product and item.product.cost is not None:
             total_stock_value += item.quantity * item.product.cost
-            
+
     low_stock_items_count = inventory_items.filter(quantity__lte=F('min_stock_level')).count()
-    
-    # For DOH (Days of Inventory on Hand), we need average daily COGS.
-    # This is a simplified version. For more accuracy, use a longer period for COGS.
+
+    # For DOH (Days of Inventory on Hand), we need average daily COGS *for this organization's products*.
+    # We can reuse the get_sales_overview function, which now calculates supplier-side COGS.
     last_30_days_start, last_30_days_end = get_date_range_from_period('last_30_days')
     if last_30_days_start:
+        # Call the modified get_sales_overview to get COGS for this organization's sales
         sales_info_30_days = get_sales_overview(organization, last_30_days_start, last_30_days_end)
         cogs_last_30_days = sales_info_30_days['total_cogs']
         avg_daily_cogs = cogs_last_30_days / 30 if cogs_last_30_days > 0 else Decimal('0.00')
