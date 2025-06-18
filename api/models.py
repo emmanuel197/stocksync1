@@ -317,6 +317,7 @@ class Inventory(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='inventory', null=True, blank=True)
 
+
     class Meta:
         verbose_name_plural = 'Inventory Items'
         unique_together = ['product', 'location']
@@ -345,19 +346,32 @@ class Inventory(models.Model):
         """Calculate total value of inventory"""
         return Decimal(self.quantity) * self.product.cost
 
+    def trigger_low_stock_alert(self, user=None):
+        """Checks if stock is low and triggers a notification."""
+        print(f"Checking low stock for Inventory ID: {self.id}, Product: {self.product.name}, Quantity: {self.quantity}, Min Level: {self.min_stock_level}")
+        if self.is_low_stock:
+            print("Stock is low. Attempting to create notification.")
+            # Add a check to prevent excessive notifications
+            # You could add a field to Inventory like last_low_stock_alert_sent
+            # or check for recent notifications as shown previously.
+            # For simplicity here, we'll just call the notification creation method.
+
+            # Call the class method on the Notification model
+            Notification.create_low_stock_notification(self, user=user)
+            print("Low stock alert triggered.")
+        else:
+            print("Stock is not low.")
+
+
     def add_stock(self, quantity, user=None, organization=None, note=None, reference=None):
         """Adds stock to inventory and records movement."""
         if quantity <= 0:
-            # Optionally log a warning or raise an error
             return
 
-        # Ensure organization is provided, either directly or from the inventory instance
-        # Use the provided organization if available, otherwise fall back to the inventory's organization
         movement_organization = organization if organization is not None else self.organization
         if movement_organization is None:
-             # This indicates a potential data integrity issue if inventory has no organization
              print(f"Warning: Inventory {self.id} has no organization. Cannot create movement.")
-             return # Or raise an error
+             return
 
         # Update inventory quantity *before* creating the movement
         self.quantity += quantity
@@ -375,25 +389,22 @@ class Inventory(models.Model):
             reference=reference
         )
 
+        # Check for low stock after adding (in case it was negative and is now low)
+        self.trigger_low_stock_alert(user=user) # Call the new method
+
+
     def remove_stock(self, quantity, user=None, organization=None, note=None, reference=None):
         """Removes stock from inventory and records movement."""
         if quantity <= 0:
-            # Optionally log a warning or raise an error
             return
         if self.quantity < quantity:
-            # Handle insufficient stock - maybe raise an exception
             print(f"Warning: Attempted to remove {quantity} from inventory {self.id} with only {self.quantity} available.")
-            # Depending on requirements, you might raise an error here
-            # raise ValueError("Insufficient stock")
-            return # Or handle insufficient stock differently
+            return
 
-        # Ensure organization is provided, either directly or from the inventory instance
-        # Use the provided organization if available, otherwise fall back to the inventory's organization
         movement_organization = organization if organization is not None else self.organization
         if movement_organization is None:
-             # This indicates a potential data integrity issue if inventory has no organization
              print(f"Warning: Inventory {self.id} has no organization. Cannot create movement.")
-             return # Or raise an error
+             return
 
         # Update inventory quantity *before* creating the movement
         self.quantity -= quantity
@@ -413,7 +424,12 @@ class Inventory(models.Model):
             reference=reference
         )
 
+        # Check for low stock after removing
+        self.trigger_low_stock_alert(user=user) # Call the new method
+
     # Add other methods like adjust_stock if needed, ensuring they also handle organization
+    # and call self.trigger_low_stock_alert() after saving.
+
 
 class InventoryMovement(models.Model):
     MOVEMENT_TYPES = [

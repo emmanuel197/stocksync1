@@ -1496,7 +1496,7 @@ class ManualInventoryAdjustmentView(APIView):
                     print(f"Processing item: Inventory ID={inventory.id}, Product='{inventory.product.name}', Quantity Change (abs)={quantity_change_abs}")
 
                     if movement_type == 'addition':
-                        # add_stock method now handles setting quantity_after_movement
+                        # add_stock method should handle quantity update, movement creation, and low stock check
                         inventory.add_stock(
                             quantity_change_abs,
                             user=user,
@@ -1507,29 +1507,22 @@ class ManualInventoryAdjustmentView(APIView):
                         print(f"Added {quantity_change_abs} to inventory {inventory.id}. New quantity: {inventory.quantity}")
 
                     elif movement_type in ['removal', 'sale']:
+                        # Check for sufficient stock (already done by serializer, but double-check)
                         if inventory.quantity < quantity_change_abs:
-                            raise serializers.ValidationError(f"Insufficient stock for {movement_type}: {inventory.product.name}")
+                             # This should be caught by the serializer, but as a safeguard:
+                             print(f"Insufficient stock detected during processing for {movement_type}: {inventory.product.name}")
+                             raise serializers.ValidationError(f"Insufficient stock for {movement_type}: {inventory.product.name}")
 
-                        # Update quantity *before* creating the movement
-                        inventory.quantity -= quantity_change_abs
-                        if movement_type == 'sale':
-                            inventory.last_sold = timezone.now() # Update last_sold for sales
-                        inventory.save()
-                        print(f"Removed {quantity_change_abs} from inventory {inventory.id} ({movement_type}). New quantity: {inventory.quantity}")
-
-                        # Manually create InventoryMovement for 'removal' or 'sale' type
-                        # Set quantity_after_movement here
-                        InventoryMovement.objects.create(
-                            inventory=inventory,
-                            movement_type=movement_type, # Use the requested type
-                            quantity_change=-quantity_change_abs, # Negative for removal
-                            quantity_after_movement=inventory.quantity, # Set the quantity after the change
+                        # Use the remove_stock method which should handle quantity update, movement creation, and low stock check
+                        inventory.remove_stock(
+                            quantity_change_abs,
                             user=user,
                             organization=organization,
                             note=note or f"Manual {movement_type} of {quantity_change_abs} units",
                             reference=reference
                         )
-                        print(f"Inventory movement ({movement_type}) recorded.")
+                        print(f"Removed {quantity_change_abs} from inventory {inventory.id} ({movement_type}). New quantity: {inventory.quantity}")
+
 
                     # The 'adjustment' case logic needs to be defined based on how you want it to behave
                     # with the current serializer structure (quantity >= 1).
