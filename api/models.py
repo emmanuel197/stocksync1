@@ -362,6 +362,16 @@ class Inventory(models.Model):
         else:
             print("Stock is not low.")
 
+    def trigger_overstock_alert(self, user=None):
+        """Checks if stock is over max level and triggers a notification."""
+        print(f"Checking overstock for Inventory ID: {self.id}, Product: {self.product.name}, Quantity: {self.quantity}, Max Level: {self.max_stock_level}")
+        if self.is_overstock:
+            print("Stock is over max level. Attempting to create notification.")
+            # Add a check to prevent excessive notifications if needed
+            Notification.create_overstock_notification(self, user=user)
+            print("Overstock alert triggered.")
+        else:
+            print("Stock is not over max level.")
 
     def add_stock(self, quantity, user=None, organization=None, note=None, reference=None):
         """Adds stock to inventory and records movement."""
@@ -391,7 +401,8 @@ class Inventory(models.Model):
 
         # Check for low stock after adding (in case it was negative and is now low)
         self.trigger_low_stock_alert(user=user) # Call the new method
-
+        # Add this line to check for overstock after adding stock
+        self.trigger_overstock_alert(user=user)
 
     def remove_stock(self, quantity, user=None, organization=None, note=None, reference=None):
         """Removes stock from inventory and records movement."""
@@ -633,6 +644,7 @@ class Notification(models.Model):
         ('warning', 'Warning'),
         ('error', 'Error'),
         ('low_stock', 'Low Stock Alert'),
+        ('overstock', 'Overstock Alert'), # Add this line
         ('order', 'Order Update'),
         ('system', 'System Message'),
     ]
@@ -669,26 +681,38 @@ class Notification(models.Model):
 
     @classmethod
     def create_low_stock_notification(cls, inventory, user=None):
+        # ...existing code...
+        pass # Keep the existing method
+
+    @classmethod
+    def create_overstock_notification(cls, inventory, user=None):
+        """Checks if stock is over max level and triggers a notification."""
+        # Determine users to notify (e.g., admins and managers in the organization)
         if not user:
             users = User.objects.filter(
                 organization=inventory.organization,
-                role__in=['admin', 'manager'],
+                role__in=['admin', 'manager'], # Notify admins and managers
                 is_active=True
             )
         else:
+            # If a specific user is provided, notify only that user
             users = [user]
 
         notifications = []
-        message = f"Low stock alert: {inventory.product.name} at {inventory.location.name} is below minimum level. Current: {inventory.quantity}, Minimum: {inventory.min_stock_level}"
+        # Customize the message for overstock
+        message = f"Overstock alert: {inventory.product.name} at {inventory.location.name} is above maximum level. Current: {inventory.quantity}, Maximum: {inventory.max_stock_level}"
 
+        # Create a notification for each relevant user
         for user in users:
+            # Optional: Add logic here to prevent duplicate notifications within a short period
+            # For simplicity, we create one every time the trigger is hit and condition is met.
             notification = cls.objects.create(
                 user=user,
                 message=message,
-                notification_type='low_stock',
+                notification_type='overstock', # Use the new type
                 related_object_type='inventory',
                 related_object_id=inventory.id,
-                organization=inventory.organization
+                organization=inventory.organization # Associate with the inventory's organization
             )
             notifications.append(notification)
 
