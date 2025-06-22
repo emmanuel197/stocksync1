@@ -61,7 +61,8 @@ class Supplier(models.Model):
         if not self.supplier_code:
             prefix = 'SUP'
             if self.organization:
-                last_supplier = Supplier.objects.base_manager.filter(organization=self.organization).order_by('-id').first()
+                # Fix: Removed .base_manager as it's not needed for the default manager
+                last_supplier = Supplier.objects.filter(organization=self.organization).order_by('-id').first()
                 if last_supplier and last_supplier.supplier_code.startswith(prefix):
                     try:
                         last_number = int(last_supplier.supplier_code[len(prefix):])
@@ -130,7 +131,7 @@ class Buyer(models.Model):
         if not self.buyer_code:
             prefix = 'BUY'
             if self.organization:
-                last_buyer = Buyer.objects.base_manager.filter(organization=self.organization).order_by('-id').first()
+                last_buyer = Buyer.objects.filter(organization=self.organization).order_by('-id').first()
                 if last_buyer and last_buyer.buyer_code.startswith(prefix):
                     try:
                         last_number = int(last_buyer.buyer_code[len(prefix):])

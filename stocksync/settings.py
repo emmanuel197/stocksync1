@@ -1,14 +1,13 @@
 from pathlib import Path
+from dotenv import load_dotenv
 import os
-from datetime import timedelta
 import dj_database_url
+from datetime import timedelta
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-from dotenv import load_dotenv
-
-
-load_dotenv()
+load_dotenv() # Make sure this is called to load variables from .env
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
@@ -96,17 +95,36 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 DATABASES['default'] = dj_database_url.config(default=DATABASE_URL)
 
 # Email Settings
-EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend' # Switch back to SMTP backend
-EMAIL_FILE_PATH = os.path.join(BASE_DIR, 'sent_emails') # Specify a directory to save emails
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend' # Use standard SMTP backend
+# EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend' # Comment out if using SMTP
+# EMAIL_FILE_PATH = os.path.join(BASE_DIR, 'sent_emails') # Comment out if using SMTP
 
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
+# Load email settings from environment variables
+EMAIL_HOST = os.environ.get('EMAIL_HOST') # <-- Load from environment
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587)) # <-- Load from environment, default to 587
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')
-EMAIL_USE_TLS = True
-# DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
+
+# Load boolean settings from environment variables, handling potential string values
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False').lower() == 'true'
+
+# Ensure only one of TLS or SSL is True based on common ports if not explicitly set
+if not EMAIL_USE_TLS and not EMAIL_USE_SSL:
+    if EMAIL_PORT == 465:
+        EMAIL_USE_SSL = True
+        print("Warning: EMAIL_USE_TLS and EMAIL_USE_SSL are both False, but port is 465. Assuming EMAIL_USE_SSL=True.")
+    elif EMAIL_PORT == 587:
+        EMAIL_USE_TLS = True
+        print("Warning: EMAIL_USE_TLS and EMAIL_USE_SSL are both False, but port is 587. Assuming EMAIL_USE_TLS=True.")
+elif EMAIL_USE_TLS and EMAIL_USE_SSL:
+     raise ValueError("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be True. Choose one.")
+
+
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER) # <-- Load from environment
+
 FRONTEND_URL = os.environ.get('FRONTEND_URL')
+
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 
